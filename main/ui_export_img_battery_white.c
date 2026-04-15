@@ -1,0 +1,1 @@
+#include "../UI_Export/ui_img_battery_android_frame_full_20dp_ffffff_fill0_wght400_grad0_opsz20_png.c"
