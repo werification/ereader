@@ -1,0 +1,27 @@
+Fine - with a little care
+sampled at boot or shared with debug/serial
+Pin	Label	What to know	Role
+IO3	GPIO3	Sampled at reset to select JTAG interface (USB Serial/JTAG controller vs. external pins). Improper use can disable external JTAG or alter debug interface.	Strapping
+IO39	MTCK (GPIO39)	Default JTAG debugging TCK pin. If JTAG is needed, this pin must be free; it may also be used internally for PSRAM chip select on certain modules, so avoid repurposing it.	Other
+IO40	MTDO (GPIO40)	Default JTAG TDO output for debugging. Using it as GPIO will interfere with JTAG debugging functionality.	Other
+IO41	MTDI (GPIO41)	Default JTAG TDI input for debugging. Should be reserved for JTAG or left unused if JTAG is to remain available.	Other
+IO45	GPIO45	Determines flash/PSRAM power voltage (3.3 V vs 1.8 V) at boot. Must match hardware configuration; using as GPIO can upset flash supply setting.	Strapping
+IO46	GPIO46	Must be at a defined level during reset (with GPIO0) to select normal or download boot and UART/USB print mode. This pin is input-only (no output drive), so it should be left for its intended strapping function.	Strapping
+IO42	GPIO42	General-purpose input suitable for the Green button with INPUT_PULLUP.	Green button input
+Only if you know the tricks
+wired to flash or USB - expect a fight
+Pin	Label	What to know	Role
+IO9	FSPIHD	Connected to external flash (data/hold signal) on most modules. Not recommended for use as GPIO, since it must remain dedicated to flash communication.	Flash
+IO10	FSPICS0	Used to select the external flash chip. It is required for flash access and cannot be repurposed without losing flash connectivity	Flash
+IO11	FSPID	Used as a data line for flash (and in-package PSRAM). It should not be used as GPIO when the flash/PSRAM is in use.	Flash
+IO12	FSPICLK	Drives the flash (and PSRAM) clock. This critical signal must be reserved for memory and not used as general GPIO.	Flash
+IO13	FSPIQ	Used as a data line for flash/PSRAM transfers. Not available for other uses when flash/PSRAM is connected.	Flash
+IO14	FSPIWP	Connected to external flash (data/write-protect signal). Not recommended as GPIO because it’s reserved for flash operations.	Flash
+IO33	FSPIHD	On chips/modules with integrated flash, this IO is wired to the flash hold pin internally. It cannot be reassigned to GPIO without breaking flash access.	Flash
+IO34	FSPICS0	Wired to the chip select of the internal flash in flash-equipped variants. It must remain low during flash operation, so it’s not available for other use.	Flash
+IO35	FSPID / PSRAM_D0	In modules with octal PSRAM, this pin is connected to the PSRAM data line. It is reserved for memory interface and not free for general GPIO when flash/PSRAM is present.	Flash
+IO36	FSPICLK / PSRAM_CLK	In modules with octal PSRAM, this pin drives the PSRAM clock. It must be dedicated to the memory interface, not used as a regular GPIO when that interface is in use.	Flash
+IO37	FSPIQ / PSRAM_DQS	In modules with octal PSRAM, this pin is connected to the PSRAM’s DQS signal. It cannot be repurposed without disrupting the PSRAM/flash communication.	Flash
+IO38	FSPIWP	On flash-equipped chips, this pin is tied to the flash’s WP# (or D3) line. It should be avoided for other use, as it’s needed for flash operations.	Flash
+IO47	SPICLK_P	Used only on variants with Octal SPI interface (e.g. ESP32-S3R16V) as part of the differential clock pair. On such chips it operates at 1.8 V and is reserved for the high-speed octal SPI clock, not for general GPIO use.	Flash
+IO48	SPICLK_N	Used only on variants with Octal SPI interface, as the negative leg of the differential clock&. On such chips it operates at 1.8 V; it should be avoided for GPIO to prevent conflicts with the octal flash/PSRAM clock.

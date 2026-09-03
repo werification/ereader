@@ -7,6 +7,8 @@ void reader_show_book_selection_screen();
 void reader_show_reading_screen();
 void reader_show_storage_error();
 void reader_set_book_selection_empty_state();
+void reader_show_book_selection_error(const char *message);
+void reader_clear_book_selection_error();
 
 bool reader_select_next_book();
 bool reader_select_prev_book();
@@ -22,6 +24,7 @@ size_t reader_selected_book_index();
 bool reader_select_book(size_t index);
 bool reader_open_book(size_t index);
 void reader_refresh_book_selection();
+void reader_retry_bookmark_save();
 void reader_update_clock_labels(const char *time_text, const char *date_text);
 void reader_update_battery_label(const char *battery_text);
 void reader_show_menu_on_boot();

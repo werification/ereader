@@ -25,10 +25,15 @@ bool booklist_add(const char *name) {
     return false;
   }
 
-  std::strncpy(books[book_count].name, name, BOOKLIST_MAX_NAME_LEN - 1);
-  books[book_count].name[BOOKLIST_MAX_NAME_LEN - 1] = '\0';
+  const size_t name_length = std::strlen(name);
+  if (name_length >= BOOKLIST_MAX_NAME_LEN) {
+    return false;
+  }
+
+  std::memcpy(books[book_count].name, name, name_length + 1U);
   books[book_count].has_saved_position = false;
   books[book_count].saved_position = 0;
+  books[book_count].saved_file_size = 0;
   ++book_count;
   return true;
 }
@@ -38,4 +43,24 @@ const BookEntry *booklist_get(size_t index) {
     return nullptr;
   }
   return &books[index];
+}
+
+bool booklist_set_saved_position(size_t index, uint32_t position, uint32_t file_size) {
+  if (index >= book_count || position > file_size) {
+    return false;
+  }
+  books[index].has_saved_position = true;
+  books[index].saved_position = position;
+  books[index].saved_file_size = file_size;
+  return true;
+}
+
+bool booklist_clear_saved_position(size_t index) {
+  if (index >= book_count) {
+    return false;
+  }
+  books[index].has_saved_position = false;
+  books[index].saved_position = 0;
+  books[index].saved_file_size = 0;
+  return true;
 }

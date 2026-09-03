@@ -27,7 +27,7 @@
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
 
 /* Fonts used by SquareLine Studio */
-#define LV_FONT_MONTSERRAT_8 1
+#define LV_FONT_MONTSERRAT_8  1
 #define LV_FONT_MONTSERRAT_10 1
 #define LV_FONT_MONTSERRAT_12 1
 #define LV_FONT_MONTSERRAT_14 1

@@ -1,6 +1,6 @@
 #include "battery.h"
 
-#include <driver/adc.h>
+#include <Arduino.h>
 
 #include "config.h"
 

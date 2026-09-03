@@ -6,14 +6,20 @@
 #include <SPI.h>
 #include <epd3c/GxEPD2_290_C90c.h>
 #include <lvgl.h>
+#include <esp32-hal.h>
 
 #include "config.h"
+#include "spi_bus.h"
 
 namespace {
+// LVGL logical resolution: landscape 296x128
 constexpr int32_t EPD_HOR_RES = 296;
 constexpr int32_t EPD_VER_RES = 128;
-// The panel is mounted in landscape; LVGL should match the physical 296x128 layout.
-constexpr size_t FRAMEBUFFER_BYTES = (static_cast<size_t>(EPD_HOR_RES) * static_cast<size_t>(EPD_VER_RES) + 7U) / 8U;
+// GxEPD2 native resolution: portrait 128x296 (WIDTH=128, HEIGHT=296)
+constexpr int32_t EPD_PANEL_W = 128;  // physical columns
+constexpr int32_t EPD_PANEL_H = 296;  // physical rows
+constexpr size_t LANDSCAPE_BYTES = (static_cast<size_t>(EPD_HOR_RES) * static_cast<size_t>(EPD_VER_RES) + 7U) / 8U;
+constexpr size_t PORTRAIT_BYTES  = (static_cast<size_t>(EPD_PANEL_W) * static_cast<size_t>(EPD_PANEL_H) + 7U) / 8U;
 
 using DisplayType = GxEPD2_3C<GxEPD2_290_C90c, GxEPD2_290_C90c::HEIGHT>;
 DisplayType display(GxEPD2_290_C90c(PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RES, PIN_EPD_BUSY));
@@ -21,32 +27,71 @@ DisplayType display(GxEPD2_290_C90c(PIN_EPD_CS, PIN_EPD_DC, PIN_EPD_RES, PIN_EPD
 lv_disp_draw_buf_t draw_buf;
 lv_disp_drv_t disp_drv;
 lv_color_t lvgl_buffer[static_cast<size_t>(EPD_HOR_RES) * static_cast<size_t>(EPD_VER_RES)];
-uint8_t black_framebuffer[FRAMEBUFFER_BYTES];
-uint8_t red_framebuffer[FRAMEBUFFER_BYTES];
+
+// Landscape framebuffers written by flush_to_display (LVGL coordinate space)
+uint8_t black_landscape[LANDSCAPE_BYTES];
+uint8_t red_landscape[LANDSCAPE_BYTES];
+
+// Portrait framebuffers sent to GxEPD2 (panel coordinate space)
+uint8_t black_portrait[PORTRAIT_BYTES];
+uint8_t red_portrait[PORTRAIT_BYTES];
+
 bool initialized = false;
 
-void set_frame_pixel(uint8_t *buffer, int32_t x, int32_t y, bool on) {
-  if (x < 0 || x >= EPD_HOR_RES || y < 0 || y >= EPD_VER_RES) {
-    return;
-  }
+void release_spi_bus() {
+  spi_bus_release(SpiDevice::Epaper);
+}
 
-  const size_t bit_index = static_cast<size_t>(y) * static_cast<size_t>(EPD_HOR_RES) + static_cast<size_t>(x);
-  const size_t byte_index = bit_index >> 3;
-  const uint8_t mask = static_cast<uint8_t>(0x80U >> (bit_index & 0x7U));
+// Set a pixel in a landscape-layout (EPD_HOR_RES wide) 1bpp buffer.
+// Bit order: MSB of each byte is the leftmost pixel.
+void set_landscape_pixel(uint8_t *buf, int32_t x, int32_t y, bool on) {
+  if (x < 0 || x >= EPD_HOR_RES || y < 0 || y >= EPD_VER_RES) return;
+  const size_t idx  = static_cast<size_t>(y) * static_cast<size_t>(EPD_HOR_RES) + static_cast<size_t>(x);
+  const size_t byte = idx >> 3;
+  const uint8_t bit = static_cast<uint8_t>(0x80U >> (idx & 7U));
+  if (on) buf[byte] |= bit; else buf[byte] &= static_cast<uint8_t>(~bit);
+}
 
-  if (on) {
-    buffer[byte_index] |= mask;
-  } else {
-    buffer[byte_index] &= static_cast<uint8_t>(~mask);
-  }
+// Set a pixel in a portrait-layout (EPD_PANEL_W wide) 1bpp buffer.
+void set_portrait_pixel(uint8_t *buf, int32_t x, int32_t y, bool on) {
+  if (x < 0 || x >= EPD_PANEL_W || y < 0 || y >= EPD_PANEL_H) return;
+  const size_t idx  = static_cast<size_t>(y) * static_cast<size_t>(EPD_PANEL_W) + static_cast<size_t>(x);
+  const size_t byte = idx >> 3;
+  const uint8_t bit = static_cast<uint8_t>(0x80U >> (idx & 7U));
+  if (on) buf[byte] |= bit; else buf[byte] &= static_cast<uint8_t>(~bit);
 }
 
 bool is_red_pixel(lv_color_t color) {
   const uint32_t rgb = lv_color_to32(color);
-  const uint8_t red = static_cast<uint8_t>((rgb >> 16) & 0xFFU);
-  const uint8_t green = static_cast<uint8_t>((rgb >> 8) & 0xFFU);
-  const uint8_t blue = static_cast<uint8_t>(rgb & 0xFFU);
-  return red > 160U && green < 110U && blue < 110U;
+  const uint8_t r = static_cast<uint8_t>((rgb >> 16) & 0xFFU);
+  const uint8_t g = static_cast<uint8_t>((rgb >>  8) & 0xFFU);
+  const uint8_t b = static_cast<uint8_t>( rgb        & 0xFFU);
+  return r > 160U && g < 110U && b < 110U;
+}
+
+// Transpose landscape (296x128) framebuffers into portrait (128x296) buffers.
+// Rotation: 90° CCW — landscape pixel (lx, ly) maps to portrait pixel (ly, EPD_HOR_RES-1-lx).
+void build_portrait_buffers() {
+  std::memset(black_portrait, 0xFFU, sizeof(black_portrait));
+  std::memset(red_portrait,   0xFFU, sizeof(red_portrait));
+
+  for (int32_t ly = 0; ly < EPD_VER_RES; ++ly) {
+    for (int32_t lx = 0; lx < EPD_HOR_RES; ++lx) {
+      const size_t idx  = static_cast<size_t>(ly) * static_cast<size_t>(EPD_HOR_RES) + static_cast<size_t>(lx);
+      const size_t byte = idx >> 3;
+      const uint8_t bit = static_cast<uint8_t>(0x80U >> (idx & 7U));
+
+      const bool blk = !(black_landscape[byte] & bit);  // 0-bit = black pixel
+      const bool red = !(red_landscape[byte]   & bit);  // 0-bit = red pixel
+
+      // 90° CCW: portrait x = ly, portrait y = (EPD_HOR_RES - 1 - lx)
+      const int32_t px = ly;
+      const int32_t py = EPD_HOR_RES - 1 - lx;
+
+      set_portrait_pixel(black_portrait, px, py, blk);
+      set_portrait_pixel(red_portrait,   px, py, red);
+    }
+  }
 }
 
 void flush_to_display(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
@@ -55,26 +100,16 @@ void flush_to_display(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *col
 
   for (int32_t y = 0; y < h; ++y) {
     for (int32_t x = 0; x < w; ++x) {
-      const size_t src_index = static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x);
-      const lv_color_t color = color_p[src_index];
+      const lv_color_t color = color_p[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)];
       const int32_t px = area->x1 + x;
       const int32_t py = area->y1 + y;
-
-      const bool red = is_red_pixel(color);
-      const bool black = !red && lv_color_brightness(color) < 128;
-
-      set_frame_pixel(red_framebuffer, px, py, red);
-      set_frame_pixel(black_framebuffer, px, py, black);
+      const bool red   = is_red_pixel(color);
+      const bool black = !red && lv_color_brightness(color) < 128U;
+      // Store inverted (GxEPD2 convention: 0 = ink, 1 = white)
+      set_landscape_pixel(black_landscape, px, py, !black);
+      set_landscape_pixel(red_landscape,   px, py, !red);
     }
   }
-
-  display.setFullWindow();
-  display.firstPage();
-  do {
-    display.fillScreen(GxEPD_WHITE);
-    display.drawBitmap(0, 0, black_framebuffer, EPD_HOR_RES, EPD_VER_RES, GxEPD_BLACK);
-    display.drawBitmap(0, 0, red_framebuffer, EPD_HOR_RES, EPD_VER_RES, GxEPD_RED);
-  } while (display.nextPage());
 
   lv_disp_flush_ready(drv);
 }
@@ -85,16 +120,22 @@ void epaper_init() {
     return;
   }
 
-  std::memset(black_framebuffer, 0xFF, sizeof(black_framebuffer));
-  std::memset(red_framebuffer, 0xFF, sizeof(red_framebuffer));
-  display.init(115200, true, 2, false);
+  std::memset(black_landscape, 0xFFU, sizeof(black_landscape));
+  std::memset(red_landscape,   0xFFU, sizeof(red_landscape));
+  if (!spi_bus_acquire(SpiDevice::Epaper)) {
+    DBG_PRINTLN("E-paper SPI acquire failed");
+    return;
+  }
+  display.init(0, false, 2, false, SPI, SPISettings(4000000U, MSBFIRST, SPI_MODE0));
+  DBG_PRINTLN("E-paper initialized on shared SPI bus");
+  DBG_PRINTLN("Both SPI chip selects deasserted after e-paper init");
   display.setFullWindow();
+  // clearScreen() writes and refreshes the panel once; do not issue a second
+  // identical refresh during boot.
   display.clearScreen();
-  display.refresh();
   display.hibernate();
+  release_spi_bus();
   delay(100);
-  display.setRotation(1);
-  display.setFullWindow();
 
   lv_init();
   lv_disp_draw_buf_init(&draw_buf, lvgl_buffer, nullptr, static_cast<uint32_t>(sizeof(lvgl_buffer) / sizeof(lvgl_buffer[0])));
@@ -113,19 +154,47 @@ void epaper_init() {
 }
 
 void epaper_hibernate() {
+  if (!spi_bus_acquire(SpiDevice::Epaper)) {
+    return;
+  }
   display.hibernate();
+  release_spi_bus();
+}
+
+void epaper_refresh() {
+  if (!spi_bus_acquire(SpiDevice::Epaper)) {
+    DBG_PRINTLN("E-paper refresh SPI acquire failed");
+    return;
+  }
+  build_portrait_buffers();
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.drawBitmap(0, 0, black_portrait, EPD_PANEL_W, EPD_PANEL_H, GxEPD_BLACK);
+    display.drawBitmap(0, 0, red_portrait,   EPD_PANEL_W, EPD_PANEL_H, GxEPD_RED);
+  } while (display.nextPage());
+  display.hibernate();
+  release_spi_bus();
 }
 
 void epaper_flush_example() {
+  if (!spi_bus_acquire(SpiDevice::Epaper)) {
+    return;
+  }
   display.setFullWindow();
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
   } while (display.nextPage());
   display.hibernate();
+  release_spi_bus();
 }
 
 void epaper_show_test_pattern() {
+  if (!spi_bus_acquire(SpiDevice::Epaper)) {
+    return;
+  }
   display.setFullWindow();
   display.firstPage();
   do {
@@ -142,4 +211,6 @@ void epaper_show_test_pattern() {
     display.setCursor(8, 62);
     display.print("RED");
   } while (display.nextPage());
+  display.hibernate();
+  release_spi_bus();
 }
